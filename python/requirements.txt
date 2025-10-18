@@ -1,0 +1,7 @@
+instagrapi==2.0.0
+python-telegram-bot==20.7
+python-dotenv==1.0.1
+# Optional: fallback tools
+instaloader==4.11
+urllib3==1.26.18
+Pillow>=8.1.1

@@ -33,3 +33,29 @@ storageState.json
 node_modules/
 package-lock.json
 yarn.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+.env
+.env.*
+.python-version
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
+
+# Type checkers / tests / coverage
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.cache/
+
+# Jupyter
+.ipynb_checkpoints/
