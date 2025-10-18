@@ -13,6 +13,16 @@ class IGService:
         self.persist = bool(session_path) and str(session_path).lower() not in {"", ":memory:", "memory", "none", "null"}
         self.session_path = Path(session_path) if self.persist else None
         self.client = Client()
+        # prevent interactive input prompts in server logs (Render/Scalingo)
+        try:
+            def _no_interactive_code_handler(username, choice=None):
+                # Do not attempt to read from stdin; let /2fa flow handle it
+                raise ChallengeRequired("Challenge code required; provide via /2fa <code>")
+
+            # Some versions pass only (username,), others (username, choice)
+            self.client.challenge_code_handler = _no_interactive_code_handler
+        except Exception:
+            pass
         # reduce instagrapi logging noise
         try:
             logging.getLogger("instagrapi").setLevel(logging.ERROR)
