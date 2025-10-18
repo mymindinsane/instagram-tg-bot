@@ -10,12 +10,15 @@ from mutuals import compute, normalize
 from ig_service import IGService
 
 script_dir = Path(__file__).parent
-# load .env next to script
-load_dotenv(dotenv_path=script_dir / ".env")
+# Load .env from repository root and legacy python/.env
+root = Path(".env")
+legacy = Path("python/.env")
+load_dotenv(dotenv_path=root)
+load_dotenv(dotenv_path=legacy)
 # also try repo root .env (when running from project root)
 load_dotenv(dotenv_path=script_dir.parent / ".env")
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-SESSION_PATH = os.getenv("IG_SESSION_PATH", "./python/sessions/session.json")
+SESSION_PATH = os.getenv("IG_SESSION_PATH", "./sessions/session.json")
 
 ig = IGService(SESSION_PATH)
 state: Dict[int, Dict[str, Any]] = {}
