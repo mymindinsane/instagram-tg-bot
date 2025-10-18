@@ -1,9 +1,12 @@
+pip==24.2
+setuptools==70.0.0
+wheel==0.43.0
 instagrapi==2.0.0
 python-telegram-bot==21.6
 python-dotenv==1.0.1
 # Optional: fallback tools
 instaloader==4.11
 urllib3==1.26.18
-Pillow>=8.1.1
+Pillow==10.4.0
 gunicorn==21.2.0
 Flask==3.0.3
