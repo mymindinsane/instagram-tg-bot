@@ -229,6 +229,10 @@ def main():
     app.add_error_handler(error_handler)
     # Allow running under WSGI thread without installing signal handlers
     if os.getenv("PTB_NO_SIGNALS") == "1":
+        # When running in a background thread (under Gunicorn/WSGI), there is no current event loop
+        # Create and set one explicitly for python-telegram-bot v21
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         app.run_polling(stop_signals=None)
     else:
         app.run_polling()
