@@ -57,10 +57,14 @@ public class IgPlaywrightScraper {
             // Убедиться, что хедер профиля прогрузился
             page.waitForSelector("header", new Page.WaitForSelectorOptions().setTimeout(15000));
 
+            // Оценим ожидаемые размеры для контроля доскролла
+            Integer expectedFollowers = getExpectedCount(page, true);
+            Integer expectedFollowing = getExpectedCount(page, false);
+
             // Open followers dialog
-            Set<String> followers = openAndCollect(page, true);
+            Set<String> followers = openAndCollect(page, true, expectedFollowers);
             // Open following dialog
-            Set<String> following = openAndCollect(page, false);
+            Set<String> following = openAndCollect(page, false, expectedFollowing);
 
             context.close();
             browser.close();
@@ -68,7 +72,7 @@ public class IgPlaywrightScraper {
         }
     }
 
-    private static Set<String> openAndCollect(Page page, boolean followers) {
+    private static Set<String> openAndCollect(Page page, boolean followers, Integer expectedTotal) {
         // Click followers/following link
         String linkSelectorFollowers = "a[href$='/followers/'], a:has-text('followers'), a:has-text('подписчик')";
         String linkSelectorFollowing = "a[href$='/following/'], a:has-text('following'), a:has-text('подписки')";
@@ -91,9 +95,11 @@ public class IgPlaywrightScraper {
         try { scrollArea.first().click(); } catch (Exception ignored) {}
         try { moveMouseToCenter(page, scrollArea.first()); } catch (Exception ignored) {}
 
+        boolean slow = isSlow();
+        java.util.Random rnd = slow ? new java.util.Random() : null;
         Set<String> names = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         int stable = 0; int lastCount = -1;
-        for (int i = 0; i < 1000; i++) {
+        for (int i = 0; i < (slow ? 3000 : 2000); i++) {
             // попытаться скроллить к последнему видимому элементу
             try {
                 Locator items = list.locator("li");
@@ -102,16 +108,17 @@ public class IgPlaywrightScraper {
                     items.nth(Math.max(0, cnt - 1)).scrollIntoViewIfNeeded();
                 } else {
                     // запасной вариант: прокрутка контейнера
-                    page.evaluate("(el)=>{el.scrollTop = el.scrollHeight}", scrollArea.first().elementHandle());
+                    scrollArea.first().evaluate("(el)=>{el.scrollTop = el.scrollHeight}");
                 }
             } catch (Exception ignored) {}
 
             // Доп. прокрутка: реальная прокрутка колесом мыши над контейнером, затем scrollBy и PageDown как бэкап
-            try { wheelScrollOver(page, scrollArea.first(), 5, 300); } catch (Exception ignored) {}
-            for (int step = 0; step < 5; step++) {
+            try { wheelScrollOver(page, scrollArea.first(), slow ? 4 : 3, slow ? 200 : 220); } catch (Exception ignored) {}
+            for (int step = 0; step < (slow ? 4 : 3); step++) {
                 try { scrollArea.first().hover(); } catch (Exception ignored) {}
-                try { page.evaluate("(el)=>{el.scrollBy(0, 800)}", scrollArea.first().elementHandle()); } catch (Exception ignored) {}
-                page.waitForTimeout(180);
+                int dy = slow ? 520 + (rnd.nextInt(3) * 60) : 600;
+                try { scrollArea.first().evaluate("(el,dy)=>{el.scrollBy(0, dy)}", dy); } catch (Exception ignored) {}
+                page.waitForTimeout(slow ? 380 : 260);
             }
             try { page.keyboard().press("PageDown"); } catch (Exception ignored) {}
 
@@ -121,20 +128,27 @@ public class IgPlaywrightScraper {
                 if (more.count() > 0 && more.isVisible()) more.click();
             } catch (Exception ignored) {}
 
-            page.waitForTimeout(700);
+            // редкая синхронизация по сети
+            if (!slow && i % 10 == 0) {
+                try { page.waitForLoadState(LoadState.NETWORKIDLE, new Page.WaitForLoadStateOptions().setTimeout(2000)); } catch (Exception ignored) {}
+            }
+            page.waitForTimeout(slow ? 1200 : 900);
             names.addAll(extractUsernames(dialog));
             int cur = names.size();
             // Лёгкий лог в stdout для диагностики
             try { System.out.println("[scrape] collected=" + cur); } catch (Exception ignored) {}
+            if (expectedTotal != null && expectedTotal > 0 && cur >= expectedTotal) {
+                break; // достигли ожидаемого размера
+            }
             if (cur == lastCount) {
-                stable++; if (stable >= 5) break;
+                stable++; if (stable >= (slow ? 12 : 8)) break;
             } else { stable = 0; lastCount = cur; }
         }
         // Close dialog with Escape
         page.keyboard().press("Escape");
 
         // Если прирост остановился слишком рано, пробуем fallback через отдельную страницу
-        if (names.size() <= 6) {
+        if (names.size() <= 6 || (expectedTotal != null && names.size() + 3 < expectedTotal)) {
             try {
                 String suffix = followers ? "/followers/" : "/following/";
                 String href = null;
@@ -158,13 +172,43 @@ public class IgPlaywrightScraper {
                     // Скроллим страницу целиком
                     Set<String> pageNames = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
                     int stable2 = 0; int last2 = -1;
-                    for (int i = 0; i < 1200; i++) {
-                        try { page.evaluate("(d)=>{(d.scrollingElement||d.documentElement).scrollBy(0,1200)}", page.mainFrame().evaluateHandle("() => document")); } catch (Exception ignored) {}
+                    for (int i = 0; i < (slow ? 2600 : 2000); i++) {
+                        try { page.evaluate("(d)=>{(d.scrollingElement||d.documentElement).scrollBy(0,900)}", page.mainFrame().evaluateHandle("() => document")); } catch (Exception ignored) {}
                         try { page.keyboard().press("PageDown"); } catch (Exception ignored) {}
-                        page.waitForTimeout(400);
+                        page.waitForTimeout(slow ? 900 : 600);
                         pageNames.addAll(extractUsernames(page.locator("main")));
                         int cur2 = pageNames.size();
-                        if (cur2 == last2) { stable2++; if (stable2 >= 8) break; } else { stable2 = 0; last2 = cur2; }
+                        if (expectedTotal != null && expectedTotal > 0 && cur2 >= expectedTotal) break;
+                        if (cur2 == last2) { stable2++; if (stable2 >= (slow ? 14 : 10)) break; } else { stable2 = 0; last2 = cur2; }
+                    }
+                    names.addAll(pageNames);
+                }
+            } catch (Exception ignored) {}
+        }
+        // Мобильный фолбек: m.instagram.com, если по-прежнему недобор
+        if (expectedTotal != null && names.size() + 3 < expectedTotal) {
+            try {
+                String suffix = followers ? "/followers/" : "/following/";
+                String baseUrl = page.url();
+                int ix = baseUrl.indexOf("instagram.com/");
+                if (ix > 0) {
+                    String tail = baseUrl.substring(ix + "instagram.com/".length());
+                    int slash = tail.indexOf('/');
+                    String user = slash >= 0 ? tail.substring(0, slash) : tail;
+                    String href = "https://m.instagram.com/" + user + suffix;
+                    page.navigate(href);
+                    try { page.waitForLoadState(LoadState.DOMCONTENTLOADED); } catch (Exception ignored) {}
+                    Set<String> pageNames = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+                    int stable3 = 0; int last3 = -1;
+                    for (int i = 0; i < (slow ? 2800 : 2200); i++) {
+                        try { page.evaluate("(d)=>{(d.scrollingElement||d.documentElement).scrollBy(0,800)}", page.mainFrame().evaluateHandle("() => document")); } catch (Exception ignored) {}
+                        try { page.keyboard().press("PageDown"); } catch (Exception ignored) {}
+                        try { page.waitForLoadState(LoadState.NETWORKIDLE, new Page.WaitForLoadStateOptions().setTimeout(2000)); } catch (Exception ignored) {}
+                        page.waitForTimeout(slow ? 1000 : 700);
+                        pageNames.addAll(extractUsernames(page.locator("main")));
+                        int cur3 = pageNames.size();
+                        if (expectedTotal != null && expectedTotal > 0 && cur3 >= expectedTotal) break;
+                        if (cur3 == last3) { stable3++; if (stable3 >= (slow ? 16 : 12)) break; } else { stable3 = 0; last3 = cur3; }
                     }
                     names.addAll(pageNames);
                 }
@@ -173,35 +217,61 @@ public class IgPlaywrightScraper {
         return names;
     }
 
-    private static Set<String> extractUsernames(Locator dialog) {
-        List<String> hrefs = dialog.locator("a[href]").all().stream()
-                .map(el -> el.getAttribute("href")).filter(Objects::nonNull).collect(Collectors.toList());
+    private static Set<String> extractUsernames(Locator root) {
         Set<String> out = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-        for (String href : hrefs) {
-            String tail = href;
-            // Normalize absolute instagram links
-            if (tail.startsWith("https://www.instagram.com/") || tail.startsWith("http://www.instagram.com/") || tail.startsWith("https://instagram.com/")) {
-                int idx = tail.indexOf("instagram.com/");
-                tail = tail.substring(idx + "instagram.com/".length());
+        // 1) href patterns (absolute and relative)
+        try {
+            List<String> hrefs = root.locator("a[href]").all().stream()
+                    .map(el -> el.getAttribute("href")).filter(Objects::nonNull).collect(Collectors.toList());
+            for (String href : hrefs) {
+                String tail = href;
+                if (tail.startsWith("https://www.instagram.com/")) {
+                    tail = tail.substring("https://www.instagram.com/".length());
+                } else if (tail.startsWith("https://instagram.com/")) {
+                    tail = tail.substring("https://instagram.com/".length());
+                }
+                if (tail.startsWith("/")) tail = tail.substring(1);
+                int q = tail.indexOf('?');
+                if (q >= 0) tail = tail.substring(0, q);
+                int slash = tail.indexOf('/');
+                if (slash >= 0) tail = tail.substring(0, slash);
+                String user = tail.replaceAll("[^a-z0-9._]", "").toLowerCase(Locale.ROOT);
+                if (!user.isEmpty() && user.length() <= 30 && !"p".equals(user) && !"accounts".equals(user)) out.add(user);
             }
-            // Handle relative links like "/username/"
-            if (tail.startsWith("/")) tail = tail.substring(1);
-            int q = tail.indexOf('?'); if (q >= 0) tail = tail.substring(0, q);
-            if (tail.endsWith("/")) tail = tail.substring(0, tail.length()-1);
-            if (tail.isBlank()) continue;
-            // Skip non-profile paths
-            String low = tail.toLowerCase(Locale.ROOT);
-            if (low.startsWith("explore") || low.startsWith("reel") || low.startsWith("p/") || low.startsWith("stories") ||
-                low.startsWith("accounts") || low.startsWith("direct") || low.startsWith("challenge") || low.startsWith("about") || low.startsWith("press") || low.startsWith("developer")) {
-                continue;
+        } catch (Exception ignored) {}
+        // 2) data-username attributes
+        try {
+            List<String> attrs = root.locator("*[data-username]").all().stream()
+                    .map(el -> el.getAttribute("data-username")).filter(Objects::nonNull).collect(Collectors.toList());
+            for (String v : attrs) {
+                String user = v.trim().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9._]", "");
+                if (!user.isEmpty()) out.add(user);
             }
-            // Username is first path segment
-            int slash = tail.indexOf('/');
-            String user = slash >= 0 ? tail.substring(0, slash) : tail;
-            if (user.matches("[A-Za-z0-9._]{1,30}")) {
-                out.add(user.toLowerCase(Locale.ROOT));
+        } catch (Exception ignored) {}
+        // 3) img alt contains username
+        try {
+            List<String> alts = root.locator("img[alt]").all().stream()
+                    .map(el -> el.getAttribute("alt")).filter(Objects::nonNull).collect(Collectors.toList());
+            for (String alt : alts) {
+                String cand = alt.toLowerCase(Locale.ROOT).replace("@", " ");
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("([a-z0-9._]{2,30})").matcher(cand);
+                if (m.find()) out.add(m.group(1));
             }
-        }
+        } catch (Exception ignored) {}
+        // 4) text nodes that look like usernames (with or without leading @)
+        try {
+            List<String> texts = root.allInnerTexts();
+            for (String t : texts) {
+                if (t == null) continue;
+                String cand = t.trim();
+                // quick filter to avoid huge text blobs
+                if (cand.length() > 40) continue;
+                cand = cand.toLowerCase(Locale.ROOT);
+                if (cand.startsWith("@")) cand = cand.substring(1);
+                cand = cand.replaceAll("[^a-z0-9._]", "");
+                if (cand.matches("[a-z0-9._]{2,30}")) out.add(cand);
+            }
+        } catch (Exception ignored) {}
         return out;
     }
 
@@ -224,6 +294,15 @@ public class IgPlaywrightScraper {
     private static boolean isDebug() {
         try {
             String v = System.getenv("IG_DEBUG");
+            return v != null && v.equalsIgnoreCase("true");
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean isSlow() {
+        try {
+            String v = System.getenv("IG_SLOW");
             return v != null && v.equalsIgnoreCase("true");
         } catch (Exception ignored) {
             return false;
@@ -255,5 +334,62 @@ public class IgPlaywrightScraper {
                 page.waitForTimeout(120);
             }
         } catch (Exception ignored) {}
+    }
+
+    // Estimate expected followers/following count from profile header
+    private static Integer getExpectedCount(Page page, boolean followers) {
+        try {
+            String suffix = followers ? "/followers/" : "/following/";
+            // try several header selectors
+            Locator header = page.locator("header");
+            Locator link = header.locator("a[href$='" + suffix + "']").first();
+            String text = null;
+            if (link.count() > 0) {
+                // common case: span inside link holds number
+                Locator num = link.locator("span, div").first();
+                if (num.count() > 0) text = num.innerText();
+                if (text == null || text.isBlank()) text = link.innerText();
+            }
+            if (text == null || text.isBlank()) {
+                // fallback: any element near link
+                Locator li = header.locator("li:has(a[href$='" + suffix + "'])").first();
+                if (li.count() > 0) text = li.innerText();
+            }
+            if (text == null || text.isBlank()) return null;
+            Integer v = parseCount(text);
+            return v;
+        } catch (Exception ignored) { return null; }
+    }
+
+    // Parse counts like "1 234", "12,345", "1.2k", "1,2 млн", "3 тыс."
+    private static Integer parseCount(String raw) {
+        if (raw == null) return null;
+        String s = raw.trim().toLowerCase(Locale.ROOT);
+        // normalize spaces and thin spaces
+        s = s.replace("\u00A0", " ").replace("\u2009", " ").replace("\u202F", " ");
+        s = s.replace(" ", "");
+        // ru words
+        boolean millionRu = s.contains("млн");
+        boolean thousandRu = s.contains("тыс");
+        // en suffixes
+        boolean hasK = s.endsWith("k") || s.contains("k");
+        boolean hasM = s.endsWith("m") || s.contains("m");
+        // extract number part with decimal comma/dot
+        String num = s.replaceAll("[^0-9, .]", "");
+        num = num.replace(',', '.');
+        try {
+            if (millionRu || hasM) {
+                double v = Double.parseDouble(num);
+                return (int) Math.round(v * 1_000_000d);
+            }
+            if (thousandRu || hasK) {
+                double v = Double.parseDouble(num);
+                return (int) Math.round(v * 1_000d);
+            }
+            // pure integer with separators already stripped
+            String digits = s.replaceAll("[^0-9]", "");
+            if (!digits.isEmpty()) return Integer.parseInt(digits);
+        } catch (Exception ignored) {}
+        return null;
     }
 }

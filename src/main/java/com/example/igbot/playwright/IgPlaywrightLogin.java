@@ -209,6 +209,17 @@ public class IgPlaywrightLogin {
                 page.keyboard().press("Enter");
             }
 
+            // Быстрая ранняя проверка ошибки неверного пароля (до 5с)
+            try {
+                long earlyStart = System.currentTimeMillis();
+                while (System.currentTimeMillis() - earlyStart < 5000) {
+                    if (detectWrongPassword(page)) throw new IllegalArgumentException("WRONG_PASSWORD");
+                    // Если уже вошли, выходим раньше
+                    if (page.locator("nav").count() > 0) break;
+                    page.waitForTimeout(300);
+                }
+            } catch (RuntimeException re) { throw re; } catch (Exception ignored) {}
+
             // wait up to 60s for either home or 2FA input
             long start = System.currentTimeMillis();
             while (System.currentTimeMillis() - start < 60000) {
@@ -231,27 +242,9 @@ public class IgPlaywrightLogin {
                     }
                 } catch (Exception ignored) {}
 
-                // Wrong password detection (scoped to alert/error elements; do NOT trigger on "Забыли пароль?")
-                try {
-                    boolean wrong = false;
-                    // Common IG error containers
-                    Locator alerts = page.locator("div[role='alert'], [aria-live='polite'], [aria-live='assertive'], form div:has-text('Неверный пароль'), form div:has-text('incorrect password')");
-                    if (alerts.count() > 0) {
-                        if (alerts.locator("text=The password you entered is incorrect").count() > 0) wrong = true;
-                        if (alerts.locator("text=incorrect password").count() > 0) wrong = true;
-                        if (alerts.locator("text=Неверный пароль").count() > 0) wrong = true;
-                        if (alerts.locator("text=Пароль введен неверно").count() > 0) wrong = true;
-                        if (alerts.locator("text=К сожалению, вы ввели неправильный пароль. Проверьте свой пароль еще раз.").count() > 0) wrong = true;
-                    }
-                    if (!wrong) {
-                        // узкоспециализированные блоки ошибки под полем
-                        Locator underInputs = page.locator("form [id*='error'], form [class*='error'], form div:has([role='alert'])");
-                        if (underInputs.locator("text=Неверный пароль").count() > 0 || underInputs.locator("text=incorrect password").count() > 0) {
-                            wrong = true;
-                        }
-                    }
-                    if (wrong) throw new IllegalArgumentException("WRONG_PASSWORD");
-                } catch (RuntimeException re) { throw re; } catch (Exception ignored) {}
+                // Wrong password detection (scoped)
+                try { if (detectWrongPassword(page)) throw new IllegalArgumentException("WRONG_PASSWORD"); }
+                catch (RuntimeException re) { throw re; } catch (Exception ignored) {}
 
                 // 2FA field candidates
                 if (page.locator("input[name='verificationCode']").count() > 0 ||
@@ -478,5 +471,29 @@ public class IgPlaywrightLogin {
         try { context.close(); } catch (Exception ignored) {}
         try { browser.close(); } catch (Exception ignored) {}
         try { pw.close(); } catch (Exception ignored) {}
+    }
+
+    private static boolean detectWrongPassword(Page page) {
+        try {
+            // Ограничиваемся видимыми ошибками в alert/aria-live/форме, игнорируя "Забыли пароль?"
+            Locator scope = page.locator("div[role='alert'], [aria-live='polite'], [aria-live='assertive'], form");
+            if (scope.count() == 0) return false;
+            String[] phrases = new String[] {
+                    "The password you entered is incorrect",
+                    "incorrect password",
+                    "Неверный пароль",
+                    "Пароль введен неверно",
+                    "К сожалению, вы ввели неправильный пароль. Проверьте свой пароль еще раз."
+            };
+            for (String p : phrases) {
+                if (scope.locator("text=" + p).count() > 0) return true;
+            }
+            // Доп. проверка под полем пароля
+            Locator underInputs = page.locator("form [id*='error'], form [class*='error'], form div:has([role='alert'])");
+            if (underInputs.locator("text=Неверный пароль").count() > 0 || underInputs.locator("text=incorrect password").count() > 0) {
+                return true;
+            }
+            return false;
+        } catch (Exception ignored) { return false; }
     }
 }

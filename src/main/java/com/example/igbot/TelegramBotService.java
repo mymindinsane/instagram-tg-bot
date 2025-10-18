@@ -85,6 +85,60 @@ public class TelegramBotService {
             bot.execute(new SendMessage(chatId, helpText()));
             return;
         }
+        if (text != null && text.startsWith("/find")) {
+            Session s = sessions.computeIfAbsent(chatId, k -> new Session());
+            String[] parts = text.trim().split("\\s+", 2);
+            if (parts.length < 2) {
+                bot.execute(new SendMessage(chatId, "Использование: /find <pattern>"));
+                return;
+            }
+            String pat = parts[1].toLowerCase(Locale.ROOT);
+            if (s.followers == null || s.following == null) {
+                bot.execute(new SendMessage(chatId, "Сначала соберите списки: /scrape <username> или загрузите через /check."));
+                return;
+            }
+            List<String> f1 = s.followers.stream().filter(u -> u.toLowerCase(Locale.ROOT).contains(pat)).limit(10).collect(Collectors.toList());
+            List<String> f2 = s.following.stream().filter(u -> u.toLowerCase(Locale.ROOT).contains(pat)).limit(10).collect(Collectors.toList());
+            String msgText = String.format(Locale.ROOT,
+                    "Поиск '%s':\nfollowers (%d): %s\nfollowing (%d): %s",
+                    pat,
+                    f1.size(), String.join(", ", f1),
+                    f2.size(), String.join(", ", f2));
+            bot.execute(new SendMessage(chatId, msgText));
+            return;
+        }
+        if (text != null && text.startsWith("/why")) {
+            Session s = sessions.computeIfAbsent(chatId, k -> new Session());
+            String[] parts = text.trim().split("\\s+", 2);
+            if (parts.length < 2) {
+                bot.execute(new SendMessage(chatId, "Использование: /why <username>"));
+                return;
+            }
+            String q = normalizeUsername(parts[1]);
+            if (q.isEmpty()) {
+                bot.execute(new SendMessage(chatId, "Некорректный username."));
+                return;
+            }
+            if (s.followers == null || s.following == null) {
+                bot.execute(new SendMessage(chatId, "Сначала соберите списки: /scrape <username> или загрузите через /check."));
+                return;
+            }
+            boolean inFollowers = s.followers.contains(q);
+            boolean inFollowing = s.following.contains(q);
+            String category;
+            if (inFollowers && inFollowing) category = "Взаимные";
+            else if (!inFollowers && inFollowing) category = "Ты подписан, он(а) нет";
+            else if (inFollowers && !inFollowing) category = "Он(а) подписан, ты нет";
+            else category = "Не найден ни в followers, ни в following (возможно, неполная загрузка/ошибка парсинга)";
+            String msgText = String.format(Locale.ROOT,
+                    "Проверка @%s:\nfollowers: %s\nfollowing: %s\nКатегория: %s",
+                    q,
+                    inFollowers ? "да" : "нет",
+                    inFollowing ? "да" : "нет",
+                    category);
+            bot.execute(new SendMessage(chatId, msgText));
+            return;
+        }
         if (text != null && text.startsWith("/login")) {
             Session s = sessions.computeIfAbsent(chatId, k -> new Session());
             s.stage = Stage.WAIT_LOGIN_USERNAME;
@@ -195,9 +249,12 @@ public class TelegramBotService {
             } catch (IllegalArgumentException e) {
                 s.pendingLogin = null;
                 if ("WRONG_PASSWORD".equals(e.getMessage())) {
-                    // попросить повторно ввести пароль
-                    s.stage = Stage.WAIT_LOGIN_PASSWORD;
-                    bot.execute(new SendMessage(chatId, "Неверный пароль. Пожалуйста, введите пароль ещё раз."));
+                    // просим ввести заново и username, и пароль
+                    s.loginUsername = null;
+                    s.usernameMsgId = null;
+                    s.passwordMsgId = null;
+                    s.stage = Stage.WAIT_LOGIN_USERNAME;
+                    bot.execute(new SendMessage(chatId, "Неверный пароль. Давай начнём заново: сначала введи username, затем пароль."));
                 } else {
                     s.stage = Stage.IDLE;
                     bot.execute(new SendMessage(chatId, "Не удалось войти: " + (e.getMessage()==null? e.toString(): e.getMessage())));
@@ -247,8 +304,16 @@ public class TelegramBotService {
         try {
             // Prefer Playwright (cross-platform, bundled browsers)
             IgPlaywrightScraper.Pair p = IgPlaywrightScraper.fetchAll(s.scrapeUsername, cookies);
-            s.followers = p.followers;
-            s.following = p.following;
+            s.followers = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+            s.followers.addAll(p.followers);
+            s.following = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+            s.following.addAll(p.following);
+            // убрать самого пользователя из обоих множеств, если встретился в списках
+            if (s.scrapeUsername != null && !s.scrapeUsername.isBlank()) {
+                String me = s.scrapeUsername.toLowerCase(Locale.ROOT);
+                s.followers.remove(me);
+                s.following.remove(me);
+            }
             s.stage = Stage.IDLE;
             computeAndRespond(chatId, s);
         } catch (Exception ex) {
