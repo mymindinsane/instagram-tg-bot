@@ -125,14 +125,8 @@ public class IgPlaywrightLogin {
             if (debug) saveArtifacts(page, "after-navigate");
             waitForStableUrl(page, 20000, 3000);
 
-            // Try to dismiss cookie consent banners that may block inputs
-            tryClick(page, "text=Only allow essential cookies");
-            tryClick(page, "text=Only allow essential");
-            tryClick(page, "text=Allow all cookies");
-            tryClick(page, "text=Accept all");
-            tryClick(page, "text=Разрешить все куки");
-            tryClick(page, "text=Разрешить все cookie");
-            tryClick(page, "text=Только необходимые cookie");
+            // Dismiss cookie banners (multi-language)
+            dismissCookieBanners(page);
             if (debug) saveArtifacts(page, "after-consent");
             waitForStableUrl(page, 20000, 3000);
 
@@ -153,6 +147,9 @@ public class IgPlaywrightLogin {
                     }
                 }
             }
+
+            // На всякий случай ещё раз скрыть баннеры куки
+            dismissCookieBanners(page);
 
             // Wait explicitly for username field to be visible
             if (userInput.count() == 0) {
@@ -234,16 +231,26 @@ public class IgPlaywrightLogin {
                     }
                 } catch (Exception ignored) {}
 
-                // Wrong password detection (multi-language heuristics)
+                // Wrong password detection (scoped to alert/error elements; do NOT trigger on "Забыли пароль?")
                 try {
-                    if (page.locator("text=The password you entered is incorrect").count() > 0 ||
-                        page.locator("text=incorrect password").count() > 0 ||
-                        page.locator("text=Неверный пароль").count() > 0 ||
-                        page.locator("text=Пароль введен неверно").count() > 0 ||
-                        page.locator("text=К сожалению, вы ввели неправильный пароль. Проверьте свой пароль еще раз.").count() > 0 ||
-                        page.locator("text=Забыли пароль?").count() > 0) {
-                        throw new IllegalArgumentException("WRONG_PASSWORD");
+                    boolean wrong = false;
+                    // Common IG error containers
+                    Locator alerts = page.locator("div[role='alert'], [aria-live='polite'], [aria-live='assertive'], form div:has-text('Неверный пароль'), form div:has-text('incorrect password')");
+                    if (alerts.count() > 0) {
+                        if (alerts.locator("text=The password you entered is incorrect").count() > 0) wrong = true;
+                        if (alerts.locator("text=incorrect password").count() > 0) wrong = true;
+                        if (alerts.locator("text=Неверный пароль").count() > 0) wrong = true;
+                        if (alerts.locator("text=Пароль введен неверно").count() > 0) wrong = true;
+                        if (alerts.locator("text=К сожалению, вы ввели неправильный пароль. Проверьте свой пароль еще раз.").count() > 0) wrong = true;
                     }
+                    if (!wrong) {
+                        // узкоспециализированные блоки ошибки под полем
+                        Locator underInputs = page.locator("form [id*='error'], form [class*='error'], form div:has([role='alert'])");
+                        if (underInputs.locator("text=Неверный пароль").count() > 0 || underInputs.locator("text=incorrect password").count() > 0) {
+                            wrong = true;
+                        }
+                    }
+                    if (wrong) throw new IllegalArgumentException("WRONG_PASSWORD");
                 } catch (RuntimeException re) { throw re; } catch (Exception ignored) {}
 
                 // 2FA field candidates
@@ -431,6 +438,30 @@ public class IgPlaywrightLogin {
             // fallback
             loc.fill(text);
         }
+    }
+
+    private static void dismissCookieBanners(Page page) {
+        String[] selectors = new String[] {
+                "text=Only allow essential cookies",
+                "text=Only allow essential",
+                "text=Allow all cookies",
+                "text=Accept all",
+                "text=Разрешить все куки",
+                "text=Разрешить все cookie",
+                "text=Только необходимые cookie",
+                "text=Принять все",
+                "button:has-text('Разрешить все')",
+                "button:has-text('Принять')",
+                "button:has-text('Accept')",
+                "button:has-text('Allow all')",
+        };
+        try {
+            for (String sel : selectors) {
+                tryClick(page, sel);
+            }
+            // иногда помогает Escape
+            try { page.keyboard().press("Escape"); } catch (Exception ignored) {}
+        } catch (Exception ignored) {}
     }
 
     private static Set<AppCookie> collectCookies(BrowserContext context) {

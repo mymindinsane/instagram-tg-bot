@@ -1,0 +1,35 @@
+# Build outputs
+/target/
+/out/
+/.gradle/
+/build/
+
+# IDE
+/.idea/
+*.iml
+/.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+
+# Playwright/Debug artifacts
+playwright-*.png
+playwright-*.html
+playwright-*.txt
+scrape-*.png
+scrape-*.html
+scrape-*.txt
+trace.zip
+trace-*.zip
+
+# Session state
+storageState.json
+
+# Node/yarn leftovers (just in case)
+node_modules/
+package-lock.json
+yarn.lock
