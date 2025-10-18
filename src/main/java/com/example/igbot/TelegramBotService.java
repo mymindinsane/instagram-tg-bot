@@ -9,11 +9,12 @@ import com.pengrad.telegrambot.request.GetFile;
 import com.pengrad.telegrambot.request.SendDocument;
 import com.pengrad.telegrambot.request.SendMessage;
 import com.pengrad.telegrambot.response.GetFileResponse;
-import com.example.igbot.selenium.CookieLoader;
-import com.example.igbot.selenium.InstagramScraper;
-import com.example.igbot.selenium.InstagramAutoLogin;
-import org.openqa.selenium.Cookie;
+import com.example.igbot.util.CookieLoader;
+import com.example.igbot.playwright.IgPlaywrightScraper;
+import com.example.igbot.playwright.IgPlaywrightLogin;
+import com.example.igbot.util.AppCookie;
 import com.pengrad.telegrambot.request.DeleteMessage;
+import com.pengrad.telegrambot.request.DeleteWebhook;
 
 import java.io.IOException;
 import java.net.URI;
@@ -42,8 +43,8 @@ public class TelegramBotService {
         String loginUsername;
         Integer usernameMsgId;
         Integer passwordMsgId;
-        InstagramAutoLogin.Handle pendingLogin;
-        Set<Cookie> authCookies;
+        IgPlaywrightLogin.Handle pendingLogin;
+        Set<AppCookie> authCookies;
     }
 
     private enum Stage { IDLE, WAIT_FOLLOWERS, WAIT_FOLLOWING, WAIT_COOKIES, WAIT_LOGIN_USERNAME, WAIT_LOGIN_PASSWORD, AWAIT_2FA }
@@ -55,6 +56,8 @@ public class TelegramBotService {
     }
 
     public void start() {
+        // Ensure webhook is disabled before using getUpdates to avoid 409 Conflict
+        try { bot.execute(new DeleteWebhook()); } catch (Exception ignored) {}
         bot.setUpdatesListener(updates -> {
             for (Update u : updates) handleUpdate(u);
             return UpdatesListener.CONFIRMED_UPDATES_ALL;
@@ -104,7 +107,7 @@ public class TelegramBotService {
             }
             String code = parts[1].trim();
             try {
-                Set<Cookie> cookies = InstagramAutoLogin.submit2FA(s.pendingLogin, code);
+                Set<AppCookie> cookies = IgPlaywrightLogin.submit2FA(s.pendingLogin, code);
                 s.authCookies = cookies;
                 s.pendingLogin = null;
                 s.stage = Stage.IDLE;
@@ -178,7 +181,7 @@ public class TelegramBotService {
             try { if (s.passwordMsgId != null) bot.execute(new DeleteMessage(chatId, s.passwordMsgId)); } catch (Exception ignored) {}
             bot.execute(new SendMessage(chatId, "Выполняю вход, возможно потребуется 2FA."));
             try {
-                InstagramAutoLogin.Result res = InstagramAutoLogin.startLogin(s.loginUsername, password);
+                IgPlaywrightLogin.Result res = IgPlaywrightLogin.startLogin(s.loginUsername, password);
                 if (res.handle != null) {
                     s.pendingLogin = res.handle;
                     s.stage = Stage.AWAIT_2FA;
@@ -189,6 +192,16 @@ public class TelegramBotService {
                     s.stage = Stage.IDLE;
                     bot.execute(new SendMessage(chatId, "Логин успешен. Теперь можно выполнять /scrape <username>."));
                 }
+            } catch (IllegalArgumentException e) {
+                s.pendingLogin = null;
+                if ("WRONG_PASSWORD".equals(e.getMessage())) {
+                    // попросить повторно ввести пароль
+                    s.stage = Stage.WAIT_LOGIN_PASSWORD;
+                    bot.execute(new SendMessage(chatId, "Неверный пароль. Пожалуйста, введите пароль ещё раз."));
+                } else {
+                    s.stage = Stage.IDLE;
+                    bot.execute(new SendMessage(chatId, "Не удалось войти: " + (e.getMessage()==null? e.toString(): e.getMessage())));
+                }
             } catch (Exception e) {
                 s.pendingLogin = null;
                 s.stage = Stage.IDLE;
@@ -198,7 +211,7 @@ public class TelegramBotService {
         }
 
         // default
-        bot.execute(new SendMessage(chatId, "Не понял. Введи /check и следуй инструкции. /help для справки."));
+        bot.execute(new SendMessage(chatId, "Не понял. Введи /login для входа и автосбора, /scrape <username> для запуска, или /check для загрузки файлов. /help для справки."));
     }
 
     private void handleDocument(Long chatId, Document doc) {
@@ -210,7 +223,7 @@ public class TelegramBotService {
         try {
             byte[] bytes = downloadTelegramFile(doc.fileId());
             if (s.stage == Stage.WAIT_COOKIES) {
-                Set<Cookie> cookies = CookieLoader.parse(bytes);
+                Set<AppCookie> cookies = CookieLoader.parse(bytes);
                 if (cookies.isEmpty()) {
                     bot.execute(new SendMessage(chatId, "Не удалось прочитать cookies. Убедись в корректном формате."));
                     return;
@@ -225,16 +238,17 @@ public class TelegramBotService {
         }
     }
 
-    private void runScrape(Long chatId, Session s, Set<Cookie> cookies) {
+    private void runScrape(Long chatId, Session s, Set<AppCookie> cookies) {
         if (s.scrapeUsername == null || s.scrapeUsername.isBlank()) {
             bot.execute(new SendMessage(chatId, "Сначала укажи username: /scrape <username>."));
             return;
         }
         bot.execute(new SendMessage(chatId, "Начинаю сбор followers/following для @" + s.scrapeUsername + ". Это может занять несколько минут."));
         try {
-            InstagramScraper.Pair pair = InstagramScraper.fetchAll(s.scrapeUsername, cookies);
-            s.followers = pair.followers;
-            s.following = pair.following;
+            // Prefer Playwright (cross-platform, bundled browsers)
+            IgPlaywrightScraper.Pair p = IgPlaywrightScraper.fetchAll(s.scrapeUsername, cookies);
+            s.followers = p.followers;
+            s.following = p.following;
             s.stage = Stage.IDLE;
             computeAndRespond(chatId, s);
         } catch (Exception ex) {
@@ -336,16 +350,19 @@ public class TelegramBotService {
 
     private static String startText() {
         return "Привет! Я бот для сравнения списков Instagram.\n" +
-               "1) Введи /check\n" +
-               "2) Пришли файл с followers (по одному никнейму на строку)\n" +
-               "3) Пришли файл с following\n" +
-               "Я верну взаимных и расхождения в отдельных файлах.";
+               "Варианты работы:\n" +
+               "- Автоматически: /login → при необходимости /2fa → /scrape <username>\n" +
+               "- Вручную файлами: /check → отправь followers и following (по одному нику в строке)\n" +
+               "Результат: взаимные и расхождения в отдельных файлах.";
     }
 
     private static String helpText() {
         return "Команды:\n" +
-               "/check — начать новую проверку\n" +
+               "/login — вход в Instagram (затем /2fa при запросе)\n" +
+               "/2fa <код> — отправить код двухфакторной аутентификации\n" +
+               "/scrape <username> — автоматически собрать followers/following и сравнить\n" +
+               "/check — ручной режим: загрузка списков файлами/текстом\n" +
                "/help — помощь\n\n" +
-               "Можно присылать .txt/.csv файлы или просто текстом списки по одному нику в строке.";
+               "В ручном режиме присылай .txt/.csv или текст: по одному нику в строке.";
     }
 }

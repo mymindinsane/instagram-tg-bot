@@ -1,13 +1,10 @@
-package com.example.igbot.selenium;
-
-import org.openqa.selenium.Cookie;
+package com.example.igbot.util;
 
 import java.net.HttpCookie;
-import java.time.Instant;
 import java.util.*;
 
 public class CookieLoader {
-    public static Set<Cookie> parse(byte[] bytes) {
+    public static Set<AppCookie> parse(byte[] bytes) {
         String s = new String(bytes, java.nio.charset.StandardCharsets.UTF_8).replace("\r", "\n");
         List<String> lines = Arrays.asList(s.split("\n"));
         if (!lines.isEmpty() && lines.get(0).startsWith("# Netscape HTTP Cookie File")) {
@@ -16,8 +13,8 @@ public class CookieLoader {
         return parseNameValue(lines);
     }
 
-    private static Set<Cookie> parseNetscape(List<String> lines) {
-        Set<Cookie> out = new LinkedHashSet<>();
+    private static Set<AppCookie> parseNetscape(List<String> lines) {
+        Set<AppCookie> out = new LinkedHashSet<>();
         for (String line : lines) {
             String t = line.trim();
             if (t.isEmpty() || t.startsWith("#")) continue;
@@ -25,30 +22,36 @@ public class CookieLoader {
             if (p.length < 7) continue;
             String domain = p[0];
             String path = p[2];
-            long expiry = 0L;
+            Long expiry = null;
             try { expiry = Long.parseLong(p[4]); } catch (Exception ignored) {}
             String name = p[5];
             String value = p[6];
-            Cookie.Builder b = new Cookie.Builder(name, value).domain(domain).path(path);
-            if (expiry > 0) b.expiresOn(Date.from(Instant.ofEpochSecond(expiry)));
-            out.add(b.build());
+            out.add(new AppCookie(name, value,
+                    domain == null || domain.isBlank() ? ".instagram.com" : domain,
+                    path == null || path.isBlank() ? "/" : path,
+                    expiry,
+                    false,
+                    false));
         }
         return out;
     }
 
-    private static Set<Cookie> parseNameValue(List<String> lines) {
-        Set<Cookie> out = new LinkedHashSet<>();
+    private static Set<AppCookie> parseNameValue(List<String> lines) {
+        Set<AppCookie> out = new LinkedHashSet<>();
         for (String line : lines) {
             String t = line.trim();
             if (t.isEmpty() || t.startsWith("#")) continue;
             if (!t.contains("=")) continue;
             List<HttpCookie> parsed = HttpCookie.parse(t);
             for (HttpCookie hc : parsed) {
-                Cookie c = new Cookie.Builder(hc.getName(), hc.getValue())
-                        .domain(".instagram.com")
-                        .path("/")
-                        .build();
-                out.add(c);
+                out.add(new AppCookie(
+                        hc.getName(), hc.getValue(),
+                        ".instagram.com",
+                        "/",
+                        null,
+                        false,
+                        false
+                ));
             }
         }
         return out;
