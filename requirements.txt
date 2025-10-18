@@ -1,5 +1,5 @@
 instagrapi==2.0.0
-python-telegram-bot==20.7
+python-telegram-bot==21.6
 python-dotenv==1.0.1
 # Optional: fallback tools
 instaloader==4.11

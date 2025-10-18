@@ -227,7 +227,11 @@ def main():
     # Должен идти после всех команд, чтобы перехватывать неизвестные
     app.add_handler(MessageHandler(filters.COMMAND, unknown_cmd))
     app.add_error_handler(error_handler)
-    app.run_polling()
+    # Allow running under WSGI thread without installing signal handlers
+    if os.getenv("PTB_NO_SIGNALS") == "1":
+        app.run_polling(stop_signals=None)
+    else:
+        app.run_polling()
 
 
 if __name__ == "__main__":
