@@ -10,7 +10,8 @@ from instagrapi.exceptions import TwoFactorRequired, LoginRequired, ChallengeReq
 
 class IGService:
     def __init__(self, session_path: str):
-        self.session_path = Path(session_path)
+        self.persist = bool(session_path) and str(session_path).lower() not in {"", ":memory:", "memory", "none", "null"}
+        self.session_path = Path(session_path) if self.persist else None
         self.client = Client()
         # reduce instagrapi logging noise
         try:
@@ -26,7 +27,7 @@ class IGService:
 
     def _load_session(self) -> bool:
         try:
-            if self.session_path.exists():
+            if self.persist and self.session_path and self.session_path.exists():
                 # session expires after 24h to avoid long-lived storage
                 try:
                     mtime = self.session_path.stat().st_mtime
@@ -44,6 +45,8 @@ class IGService:
         return False
 
     def _save_session(self):
+        if not self.persist or not self.session_path:
+            return
         self.session_path.parent.mkdir(parents=True, exist_ok=True)
         settings = self.client.get_settings()
         self.session_path.write_text(json.dumps(settings, ensure_ascii=False))
