@@ -4,6 +4,8 @@ import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 from telegram import Update, InputFile
+from telegram.constants import ParseMode
+import html as _html
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from typing import Set, Dict, Any
 from mutuals import compute, normalize
@@ -25,46 +27,62 @@ state: Dict[int, Dict[str, Any]] = {}
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Привет! Команды:\n/login — вход\n/2fa <код> — двухфакторка\n/scrape <username> — собрать и сравнить\n/why <username> — объяснить\n/find <pattern> — поиск"
+    text = (
+        "👋😺 Привет! Я помогу сравнить подписчиков и подписки в Instagram.\n\n"
+        "Доступные команды:\n"
+        "🐾 /login — вход (при необходимости 2FA)\n"
+        "🐾 /2fa <код> — отправить код двухфакторки\n"
+        "🐾 /scrape <username> — собрать followers/following и сравнить\n"
+        "🐾 /why <username> — объяснить, почему ник попал в категорию\n"
+        "🐾 /find <pattern> — найти ник по подстроке\n\n"
+        "Поддерживаю приватность: логин и пароль нигде не сохраняю, сессия живёт ограниченное время. 😼"
     )
+    await update.message.reply_text(text)
 
 
 async def login_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat.id
     state[chat] = {"stage": "WAIT_USERNAME"}
-    await update.message.reply_text("Введи username, затем пароль. Эти сообщения будут удалены.")
+    await update.message.reply_text("Введите ваш Instagram username, затем пароль. Пароль не сохраняется и будет удалён из чата. 😺")
 
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat.id
     msg = update.message.text
     st = state.get(chat)
-    if not st:
+    if not st or not st.get("stage"):
+        await update.message.reply_text("Я пока не жду текст на этом этапе. Отправьте /login чтобы войти или /help для подсказки.")
         return
     if st.get("stage") == "WAIT_USERNAME":
         st["login_username"] = normalize(msg)
         st["stage"] = "WAIT_PASSWORD"
-        await update.message.reply_text("Теперь введи пароль.")
+        await update.message.reply_text("Отлично! Теперь введите пароль. 🐾")
         return
     if st.get("stage") == "WAIT_PASSWORD":
         username = st.get("login_username")
         password = msg
         try:
             res = ig.login(username, password)
+            if res == "2FA":
+                st["stage"] = "WAIT_2FA"
+                await update.message.reply_text(
+                    "😺 Требуется двухфакторная проверка!\n"
+                    "Код придёт в приложение-аутентификатор, по SMS или на e‑mail (в зависимости от настроек Instagram).\n\n"
+                    "Отправьте код так: \n"
+                    "🐾 /2fa 123456\n\n"
+                    "Не делитесь кодом с кем-либо. Я использую его только для завершения входа. 😼"
+                )
+            else:
+                st["stage"] = None
+                await update.message.reply_text("✅😺 Готово! Логин успешен. Теперь можно запустить: /scrape <username>")
+        except Exception as e:
+            st["stage"] = None
+            await update.message.reply_text("❌🙀 Не удалось войти. Проверьте логин/пароль/код 2FA и попробуйте ещё раз.")
+        finally:
             try:
                 await update.message.delete()
             except Exception:
                 pass
-            if res == "2FA":
-                st["stage"] = "WAIT_2FA"
-                await update.message.reply_text("Требуется 2FA. Пришли /2fa 123456")
-            else:
-                st["stage"] = None
-                await update.message.reply_text("Логин успешен. Запускай /scrape <username>.")
-        except Exception as e:
-            st["stage"] = None
-            await update.message.reply_text(f"Ошибка логина: {e}")
         return
 
 
@@ -73,7 +91,7 @@ async def twofa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     st = state.get(chat, {})
     args = context.args
     if st.get("stage") != "WAIT_2FA":
-        await update.message.reply_text("Сейчас 2FA не ожидается. Сначала /login.")
+        await update.message.reply_text("Сейчас 2FA не ожидается. Сначала выполните /login. 😺")
         return
     if not args:
         await update.message.reply_text("Использование: /2fa <код>")
@@ -82,10 +100,10 @@ async def twofa_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         ig.submit_2fa(code)
         st["stage"] = None
-        await update.message.reply_text("2FA успешно. Теперь /scrape <username>.")
+        await update.message.reply_text("✅😺 2FA успешно. Теперь запустите: /scrape <username>.")
     except Exception as e:
         st["stage"] = None
-        await update.message.reply_text(f"Ошибка 2FA: {e}")
+        await update.message.reply_text("❌🙀 Не удалось подтвердить 2FA. Проверьте код и попробуйте ещё раз.")
 
 
 async def scrape_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -102,14 +120,38 @@ async def scrape_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         st["followers"] = followers
         st["following"] = following
         m, nfb, nfby = compute(followers, following)
-        summary = f"Всего followers: {len(followers)}\nВсего following: {len(following)}\nВзаимные: {len(m)}\nНе взаимные (ты подписан, они нет): {len(nfb)}\nНе взаимные (они подписаны, ты нет): {len(nfby)}"
-        await update.message.reply_text(summary)
+        # Inline summary with top items (HTML, escaped)
+        def preview_block(title: str, items: list, limit: int = 15) -> str:
+            head = f"<b>{_html.escape(title)}</b> ({len(items)}) 😺"
+            if not items:
+                return head + "\n<i>пусто</i>\n"
+            top = items[:limit]
+            body = "\n".join(f"🐱 {_html.escape(x)}" for x in top)
+            more = "\n<i>и ещё...</i>" if len(items) > limit else ""
+            return f"{head}\n{body}{more}\n"
+
+        summary = (
+            f"<b>Сводка для @{_html.escape(target)}:</b> 😼\n"
+            f"Всего followers: {len(followers)}\n"
+            f"Всего following: {len(following)}\n\n"
+            + preview_block("Взаимные", m)
+            + preview_block("Ты подписан, они нет", nfb)
+            + preview_block("Они подписаны, ты нет", nfby)
+        )
+        await update.message.reply_text(summary, parse_mode=ParseMode.HTML)
         # Attach lists as files if large
         await send_list(update, "mutuals.txt", m)
         await send_list(update, "not_following_back.txt", nfb)
         await send_list(update, "not_followed_by_you.txt", nfby)
     except Exception as e:
-        await update.message.reply_text(f"Ошибка скрейпа: {e}")
+        reason = str(e)
+        if reason:
+            reason = reason.strip().replace('\n', ' ')
+            if len(reason) > 200:
+                reason = reason[:200] + '…'
+            await update.message.reply_text(f"❌ Не удалось собрать данные: {reason}")
+        else:
+            await update.message.reply_text("❌ Не удалось собрать данные. Попробуйте позже или проверьте доступ к профилю.")
 
 
 async def send_list(update: Update, filename: str, items):
@@ -158,6 +200,18 @@ async def find_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Поиск '{pat}':\nfollowers ({len(f1)}): {', '.join(f1)}\nfollowing ({len(f2)}): {', '.join(f2)}")
 
 
+async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Неизвестная команда. Доступные: /login, /2fa, /scrape, /why, /find, /help.")
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if isinstance(update, Update) and update.effective_message:
+            await update.effective_message.reply_text("Произошла ошибка. Попробуйте ещё раз чуть позже.")
+    except Exception:
+        pass
+
+
 def main():
     if not TOKEN:
         raise RuntimeError("TELEGRAM_TOKEN is not set")
@@ -170,6 +224,9 @@ def main():
     app.add_handler(CommandHandler("why", why_cmd))
     app.add_handler(CommandHandler("find", find_cmd))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), text_handler))
+    # Должен идти после всех команд, чтобы перехватывать неизвестные
+    app.add_handler(MessageHandler(filters.COMMAND, unknown_cmd))
+    app.add_error_handler(error_handler)
     app.run_polling()
 
 
